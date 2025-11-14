@@ -39,16 +39,79 @@ jobs:
           arduino-cli config init
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
-          # Install required libraries for Evil Twin project
+          # Install required libraries for Evil Twin project (WebServer বাদ দিয়ে)
           arduino-cli lib install "WiFi"
-          arduino-cli lib install "WebServer"
           arduino-cli lib install "DNSServer"
           arduino-cli lib install "ESPAsyncWebServer"
           arduino-cli lib install "AsyncTCP"
+          arduino-cli lib install "EEPROM"
 
       - name: List installed boards and libraries
         run: |
           echo "=== Installed boards ==="
+          arduino-cli board listall | grep esp32 || true
+          echo "=== Installed libraries ==="
+          arduino-cli lib list
+
+      - name: Build sketch with detailed debugging
+        run: |
+          echo "=== Finding sketch files ==="
+          find . -name "*.ino" -type f
+          
+          # Specific file for this project
+          SKETCH_FILE=$(find . -name "IOT_ESP32.ino" -type f | head -1)
+          if [ -z "$SKETCH_FILE" ]; then
+            echo "⚠️  IOT_ESP32.ino not found, looking for any .ino file..."
+            SKETCH_FILE=$(find . -name "*.ino" -type f | head -1)
+          fi
+          
+          if [ -z "$SKETCH_FILE" ]; then
+            echo "❌ ERROR: No .ino file found in the project!"
+            echo "Available C++ files:"
+            find . -type f -name "*.cpp" -o -name "*.c" | head -10
+            exit 1
+          fi
+          
+          echo "✅ Building sketch: $SKETCH_FILE"
+          SKETCH_DIR=$(dirname "$SKETCH_FILE")
+          echo "📁 Sketch directory: $SKETCH_DIR"
+          echo "🔧 FQBN: ${{ github.event.inputs.fqbn }}"
+          
+          # Compile with verbose output to see errors
+          echo "=== Starting compilation ==="
+          arduino-cli compile --verbose --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
+          echo "✅ Compilation completed successfully!"
+
+      - name: Collect and list binary files
+        run: |
+          mkdir -p build-artifacts
+          echo "=== Searching for .bin files ==="
+          find . -type f -name "*.bin" -exec echo "Found: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          
+          # Also check build-output directory
+          if [ -d "./build-output" ]; then
+            echo "=== Build output directory ==="
+            find ./build-output -type f -name "*.bin" -exec echo "Found in build-output: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          fi
+          
+          echo "=== Final collected files ==="
+          ls -la build-artifacts/ || echo "No files in build-artifacts"
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arduino-bins
+          path: build-artifacts/
+          retention-days: 7
+
+      - name: Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build-output/          echo "=== Installed boards ==="
           arduino-cli board listall | grep esp32 || true
           echo "=== Installed libraries ==="
           arduino-cli lib list
