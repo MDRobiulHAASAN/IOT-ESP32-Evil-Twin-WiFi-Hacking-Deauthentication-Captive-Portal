@@ -1,0 +1,60 @@
+name: ESP32 Arduino CLI Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      fqbn:
+        description: "Arduino FQBN (Board spec) - default: esp32:esp32:esp32"
+        required: false
+        default: "esp32:esp32:esp32"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Setup Arduino CLI
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Build sketch
+        run: |
+          # Find .ino files recursively
+          SKETCH_FILE=$(find . -name "*.ino" -type f | head -1)
+          if [ -z "$SKETCH_FILE" ]; then
+            echo "Error: No .ino file found!"
+            exit 1
+          fi
+          echo "Building sketch: $SKETCH_FILE"
+          
+          SKETCH_DIR=$(dirname "$SKETCH_FILE")
+          arduino-cli compile --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
+
+      - name: Collect .bin files
+        run: |
+          mkdir -p build-artifacts
+          # Copy all .bin files from build output
+          find ./build-output -name "*.bin" -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          # Also look for any other .bin files in the project
+          find . -name "*.bin" -not -path "./build-artifacts/*" -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          ls -la build-artifacts/ || true
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arduino-bins
+          path: build-artifacts/
