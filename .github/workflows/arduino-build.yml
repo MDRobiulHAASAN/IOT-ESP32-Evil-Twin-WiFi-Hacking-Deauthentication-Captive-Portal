@@ -20,6 +20,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Debug - List files
+        run: |
+          echo "=== Project Structure ==="
+          find . -type f -name "*.ino" -o -name "*.cpp" -o -name "*.h" | head -20
+          echo "=== All files in root ==="
+          ls -la
+
       - name: Install Arduino CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
@@ -30,30 +37,44 @@ jobs:
           arduino-cli config init
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
+          arduino-cli lib install "WiFi"
+          arduino-cli lib install "WebServer"
+          arduino-cli lib install "DNSServer"
+
+      - name: List installed boards and libraries
+        run: |
+          arduino-cli board list
+          arduino-cli lib list
 
       - name: Build sketch
         run: |
-          # Find .ino files recursively
+          # Find all possible sketch files
+          echo "=== Looking for sketch files ==="
+          find . -name "*.ino" -type f
+          
           SKETCH_FILE=$(find . -name "*.ino" -type f | head -1)
           if [ -z "$SKETCH_FILE" ]; then
-            echo "Error: No .ino file found!"
+            echo "❌ Error: No .ino file found!"
+            find . -type f -name "*.cpp" -o -name "*.c" | head -10
             exit 1
           fi
-          echo "Building sketch: $SKETCH_FILE"
           
+          echo "✅ Building sketch: $SKETCH_FILE"
           SKETCH_DIR=$(dirname "$SKETCH_FILE")
-          arduino-cli compile --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
+          echo "Sketch directory: $SKETCH_DIR"
+          
+          # Try to compile with verbose output
+          arduino-cli compile --verbose --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
 
       - name: Collect .bin files
         run: |
           mkdir -p build-artifacts
-          # Copy all .bin files from build output
-          find ./build-output -name "*.bin" -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
-          # Also look for any other .bin files in the project
-          find . -name "*.bin" -not -path "./build-artifacts/*" -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
-          ls -la build-artifacts/ || true
+          find . -name "*.bin" -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          echo "=== Collected bin files ==="
+          ls -la build-artifacts/ || echo "No bin files found"
 
       - name: Upload Artifacts
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: arduino-bins
