@@ -38,18 +38,22 @@ jobs:
         run: |
           arduino-cli config init
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+          # Install specific ESP32 core version that includes esp_wifi.h
+          arduino-cli core install esp32:esp32@2.0.14
           # Install required libraries for Evil Twin project
           arduino-cli lib install "WiFi"
           arduino-cli lib install "WebServer"
           arduino-cli lib install "DNSServer"
-          arduino-cli lib install "ESPAsyncWebServer"
+          # Install additional dependencies
+          arduino-cli lib install "ESP Async WebServer"
           arduino-cli lib install "AsyncTCP"
 
       - name: List installed boards and libraries
         run: |
           echo "=== Installed boards ==="
           arduino-cli board listall | grep esp32 || true
+          echo "=== Installed cores ==="
+          arduino-cli core list
           echo "=== Installed libraries ==="
           arduino-cli lib list
 
@@ -68,7 +72,7 @@ jobs:
           if [ -z "$SKETCH_FILE" ]; then
             echo "❌ ERROR: No .ino file found in the project!"
             echo "Available C++ files:"
-            find . -type f -name "*.cpp" -o -name "*.c" | head -10
+            find . -type f -name "*.cpp" -o -name "*.c" -o -name "*.h" | head -10
             exit 1
           fi
           
@@ -77,39 +81,59 @@ jobs:
           echo "📁 Sketch directory: $SKETCH_DIR"
           echo "🔧 FQBN: ${{ github.event.inputs.fqbn }}"
           
+          # Additional build flags for ESP32
+          echo "=== Setting build properties ==="
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          
           # Compile with verbose output to see errors
           echo "=== Starting compilation ==="
-          arduino-cli compile --verbose --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
-          echo "✅ Compilation completed successfully!"
+          arduino-cli compile --verbose --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --build-property "compiler.cpp.extra_flags=-DESP32" --output-dir ./build-output
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Compilation completed successfully!"
+          else
+            echo "❌ Compilation failed!"
+            exit 1
+          fi
 
       - name: Collect and list binary files
         run: |
           mkdir -p build-artifacts
-          echo "=== Searching for .bin files ==="
-          find . -type f -name "*.bin" -exec echo "Found: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+          echo "=== Searching for binary files ==="
+          find . -type f \( -name "*.bin" -o -name "*.elf" -o -name "*.hex" \) -exec echo "Found: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
           
           # Also check build-output directory
           if [ -d "./build-output" ]; then
             echo "=== Build output directory ==="
-            find ./build-output -type f -name "*.bin" -exec echo "Found in build-output: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
+            find ./build-output -type f \( -name "*.bin" -o -name "*.elf" -o -name "*.hex" \) -exec echo "Found in build-output: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
           fi
           
           echo "=== Final collected files ==="
           ls -la build-artifacts/ || echo "No files in build-artifacts"
 
-      - name: Upload Artifacts
+      - name: Upload Firmware Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arduino-bins
+          name: firmware-binaries
           path: build-artifacts/
           retention-days: 7
 
-      - name: Upload Build Logs
+      - name: Upload Build Output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-output
           path: |
             build-output/
+          retention-days: 3
+
+      - name: Upload Compilation Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compilation-logs
+          path: |
+            *.log
+            **/*.log
           retention-days: 3
