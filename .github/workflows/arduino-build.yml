@@ -33,8 +33,6 @@ jobs:
       - name: Install required libraries (from library manager)
         run: |
           arduino-cli lib install "WiFi"
-          arduino-cli lib install "WebServer"
-          arduino-cli lib install "DNSServer"
 
       - name: Install Async libs from GitHub
         run: |
