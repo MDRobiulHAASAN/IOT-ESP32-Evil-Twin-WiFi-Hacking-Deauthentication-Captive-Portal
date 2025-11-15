@@ -9,8 +9,7 @@ on:
         default: "esp32:esp32:esp32"
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 jobs:
   build:
@@ -20,15 +19,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug - List project files
-        run: |
-          echo "=== Project Structure ==="
-          find . -type f -name "*.ino" -o -name "*.cpp" -o -name "*.h" | head -20
-          echo "=== Root directory ==="
-          ls -la
-          echo "=== Checking for IOT_ESP32.ino ==="
-          find . -name "IOT_ESP32.ino" -type f
-
       - name: Install Arduino CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
@@ -36,104 +26,54 @@ jobs:
 
       - name: Setup Arduino CLI and ESP32 core
         run: |
-          arduino-cli config init
-          arduino-cli core update-index
-          # Install specific ESP32 core version that includes esp_wifi.h
-          arduino-cli core install esp32:esp32@2.0.14
-          # Install required libraries for Evil Twin project
+          arduino-cli config init --overwrite
+          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32
+
+      - name: Install required libraries
+        run: |
           arduino-cli lib install "WiFi"
           arduino-cli lib install "WebServer"
           arduino-cli lib install "DNSServer"
-          # Install additional dependencies
           arduino-cli lib install "ESP Async WebServer"
           arduino-cli lib install "AsyncTCP"
 
-      - name: List installed boards and libraries
+      - name: Debug project structure
         run: |
-          echo "=== Installed boards ==="
-          arduino-cli board listall | grep esp32 || true
-          echo "=== Installed cores ==="
-          arduino-cli core list
-          echo "=== Installed libraries ==="
-          arduino-cli lib list
+          echo "=== Project Structure ==="
+          find . -name "*.ino" -o -name "*.cpp" -o -name "*.h" | head -20
+          echo "=== Root directory ==="
+          ls -la
+          echo "=== Checking for IOT_ESP32.ino ==="
+          find . -name "IOT_ESP32.ino" -type f
 
-      - name: Build sketch with detailed debugging
+      - name: Build sketch
         run: |
-          echo "=== Finding sketch files ==="
-          find . -name "*.ino" -type f
-          
-          # Specific file for this project
+          # Find the sketch file
           SKETCH_FILE=$(find . -name "IOT_ESP32.ino" -type f | head -1)
           if [ -z "$SKETCH_FILE" ]; then
-            echo "⚠️  IOT_ESP32.ino not found, looking for any .ino file..."
-            SKETCH_FILE=$(find . -name "*.ino" -type f | head -1)
-          fi
-          
-          if [ -z "$SKETCH_FILE" ]; then
-            echo "❌ ERROR: No .ino file found in the project!"
-            echo "Available C++ files:"
-            find . -type f -name "*.cpp" -o -name "*.c" -o -name "*.h" | head -10
+            echo "❌ ERROR: IOT_ESP32.ino not found!"
+            find . -name "*.ino" -type f
             exit 1
           fi
           
-          echo "✅ Building sketch: $SKETCH_FILE"
           SKETCH_DIR=$(dirname "$SKETCH_FILE")
-          echo "📁 Sketch directory: $SKETCH_DIR"
-          echo "🔧 FQBN: ${{ github.event.inputs.fqbn }}"
+          echo "✅ Building sketch from: $SKETCH_DIR"
+          echo "📄 Sketch file: $SKETCH_FILE"
           
-          # Additional build flags for ESP32
-          echo "=== Setting build properties ==="
-          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          
-          # Compile with verbose output to see errors
-          echo "=== Starting compilation ==="
-          arduino-cli compile --verbose --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --build-property "compiler.cpp.extra_flags=-DESP32" --output-dir ./build-output
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Compilation completed successfully!"
-          else
-            echo "❌ Compilation failed!"
-            exit 1
-          fi
+          # Compile the sketch
+          arduino-cli compile --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
 
-      - name: Collect and list binary files
+      - name: Collect binary files
         run: |
           mkdir -p build-artifacts
-          echo "=== Searching for binary files ==="
-          find . -type f \( -name "*.bin" -o -name "*.elf" -o -name "*.hex" \) -exec echo "Found: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
-          
-          # Also check build-output directory
-          if [ -d "./build-output" ]; then
-            echo "=== Build output directory ==="
-            find ./build-output -type f \( -name "*.bin" -o -name "*.elf" -o -name "*.hex" \) -exec echo "Found in build-output: {}" \; -exec cp -v {} build-artifacts/ \; 2>/dev/null || true
-          fi
-          
-          echo "=== Final collected files ==="
-          ls -la build-artifacts/ || echo "No files in build-artifacts"
+          find . -name "*.bin" -exec cp {} build-artifacts/ \; 2>/dev/null || true
+          echo "=== Binary files found ==="
+          ls -la build-artifacts/
 
-      - name: Upload Firmware Artifacts
-        if: always()
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: firmware-binaries
           path: build-artifacts/
           retention-days: 7
-
-      - name: Upload Build Output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: |
-            build-output/
-          retention-days: 3
-
-      - name: Upload Compilation Log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compilation-logs
-          path: |
-            *.log
-            **/*.log
-          retention-days: 3
