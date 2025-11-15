@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       fqbn:
-        description: "Arduino FQBN (Board spec) - default: esp32:esp32:esp32"
+        description: "Arduino FQBN (Board spec)"
         required: false
-        default: "esp32:esp32:esp32"
+        default: "esp32:esp32:esp32dev"
 
 permissions:
   contents: read
@@ -30,44 +30,39 @@ jobs:
           arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core install esp32:esp32
 
-      - name: Install required libraries
+      - name: Install required libraries (from library manager)
         run: |
           arduino-cli lib install "WiFi"
           arduino-cli lib install "WebServer"
           arduino-cli lib install "DNSServer"
-          arduino-cli lib install "ESP Async WebServer"
-          arduino-cli lib install "AsyncTCP"
+
+      - name: Install Async libs from GitHub
+        run: |
+          mkdir -p ~/Arduino/libraries
+          git clone https://github.com/me-no-dev/ESPAsyncWebServer.git ~/Arduino/libraries/ESPAsyncWebServer
+          git clone https://github.com/me-no-dev/AsyncTCP.git ~/Arduino/libraries/AsyncTCP
 
       - name: Debug project structure
         run: |
           echo "=== Project Structure ==="
-          find . -name "*.ino" -o -name "*.cpp" -o -name "*.h" | head -20
-          echo "=== Root directory ==="
+          find . -name "*.ino"
           ls -la
-          echo "=== Checking for IOT_ESP32.ino ==="
-          find . -name "IOT_ESP32.ino" -type f
 
       - name: Build sketch
         run: |
-          # Find the sketch file
-          SKETCH_FILE=$(find . -name "IOT_ESP32.ino" -type f | head -1)
-          if [ -z "$SKETCH_FILE" ]; then
-            echo "❌ ERROR: IOT_ESP32.ino not found!"
-            find . -name "*.ino" -type f
+          SKETCH=$(find . -name "*.ino" | head -1)
+          if [ -z "$SKETCH" ]; then
+            echo "❌ No .ino file found!"
             exit 1
           fi
-          
-          SKETCH_DIR=$(dirname "$SKETCH_FILE")
-          echo "✅ Building sketch from: $SKETCH_DIR"
-          echo "📄 Sketch file: $SKETCH_FILE"
-          
-          # Compile the sketch
-          arduino-cli compile --fqbn "${{ github.event.inputs.fqbn }}" "$SKETCH_DIR" --output-dir ./build-output
+          DIR=$(dirname "$SKETCH")
+          echo "Compiling: $SKETCH"
+          arduino-cli compile --fqbn "${{ github.event.inputs.fqbn }}" "$DIR" --output-dir ./build-output
 
       - name: Collect binary files
         run: |
           mkdir -p build-artifacts
-          find . -name "*.bin" -exec cp {} build-artifacts/ \; 2>/dev/null || true
+          find . -name "*.bin" -exec cp {} build-artifacts/ \; || true
           echo "=== Binary files found ==="
           ls -la build-artifacts/
 
