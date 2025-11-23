@@ -1,4 +1,4 @@
-name: Build ESP32 Firmware
+name: Build ESP32 Evil Twin Firmware (OTA Ready)
 
 on:
   push:
@@ -12,11 +12,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # ---------------------------------------------------------
+    # Install Arduino CLI
+    # ---------------------------------------------------------
     - name: Install Arduino CLI
       run: |
         curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
         echo "$PWD/bin" >> $GITHUB_PATH
 
+    # ---------------------------------------------------------
+    # Setup Arduino core & ESP32 board
+    # ---------------------------------------------------------
     - name: Configure Arduino CLI
       run: |
         arduino-cli config init --overwrite
@@ -24,21 +30,61 @@ jobs:
         arduino-cli core update-index
         arduino-cli core install esp32:esp32
 
-    - name: Install Required Libraries
+    # Show installed ESP32 boards
+    - name: Verify Boards
+      run: arduino-cli board listall | grep esp32
+
+    # ---------------------------------------------------------
+    # Install Libraries (AsyncTCP, ESPAsyncWebServer etc.)
+    # ---------------------------------------------------------
+    - name: Install Libraries
       run: |
-        arduino-cli lib install "WiFi"
         mkdir -p ~/Arduino/libraries
+        arduino-cli lib install "WiFi"
+        arduino-cli lib install "ArduinoOTA"
         git clone https://github.com/me-no-dev/ESPAsyncWebServer ~/Arduino/libraries/ESPAsyncWebServer
         git clone https://github.com/me-no-dev/AsyncTCP ~/Arduino/libraries/AsyncTCP
 
+    # ---------------------------------------------------------
+    # Build the main sketch (자동 .ino detect)
+    # ---------------------------------------------------------
     - name: Build Sketch
       run: |
-        SKETCH=$(find . -name "*.ino" | head -1)
+        SKETCH=$(find . -maxdepth 2 -name "*.ino" | head -1)
         echo "Compiling: $SKETCH"
-        arduino-cli compile --fqbn esp32:esp32:esp32dev "$SKETCH" --output-dir build
+        arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --build-property build.partitions=min_spiffs \
+            --output-dir build \
+            "$SKETCH"
 
-    - name: Upload Artifact
+    # ---------------------------------------------------------
+    # Upload Firmware Artifact (.bin)
+    # ---------------------------------------------------------
+    - name: Upload Firmware
       uses: actions/upload-artifact@v4
       with:
         name: firmware
-        path: build
+        path: build/*.bin
+
+  # ---------------------------------------------------------
+  # Auto Release (OTA Firmware Upload)
+  # ---------------------------------------------------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download Firmware
+      uses: actions/download-artifact@v4
+      with:
+        name: firmware
+        path: firmware
+
+    - name: Create Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: "v${{ github.run_number }}"
+        name: "ESP32 Evil Twin OTA Build ${{ github.run_number }}"
+        artifacts: "firmware/*.bin"
+        generateReleaseNotes: truetrue
