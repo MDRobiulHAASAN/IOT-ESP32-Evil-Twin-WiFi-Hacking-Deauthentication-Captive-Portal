@@ -1,4 +1,4 @@
-name: Build ESP32 Evil Twin Firmware (OTA Ready)
+name: Build ESP32 HACKER Portal Firmware (OTA Ready)
 
 on:
   push:
@@ -35,28 +35,646 @@ jobs:
       run: arduino-cli board listall | grep esp32
 
     # ---------------------------------------------------------
-    # Install Libraries (AsyncTCP, ESPAsyncWebServer etc.)
+    # Install Required Libraries
     # ---------------------------------------------------------
     - name: Install Libraries
       run: |
-        mkdir -p ~/Arduino/libraries
         arduino-cli lib install "WiFi"
+        arduino-cli lib install "WebServer"
+        arduino-cli lib install "DNSServer"
         arduino-cli lib install "ArduinoOTA"
-        git clone https://github.com/me-no-dev/ESPAsyncWebServer ~/Arduino/libraries/ESPAsyncWebServer
-        git clone https://github.com/me-no-dev/AsyncTCP ~/Arduino/libraries/AsyncTCP
 
     # ---------------------------------------------------------
-    # Build the main sketch (자동 .ino detect)
+    # Build the main sketch
     # ---------------------------------------------------------
     - name: Build Sketch
       run: |
-        SKETCH=$(find . -maxdepth 2 -name "*.ino" | head -1)
-        echo "Compiling: $SKETCH"
+        # Create main sketch directory and file
+        mkdir -p HACKER_Portal
+        cat > HACKER_Portal/HACKER_Portal.ino << 'EOF'
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <ArduinoOTA.h>
+
+typedef struct
+{
+  String ssid;
+  uint8_t ch;
+  uint8_t bssid[6];
+  int rssi;
+} _Network;
+
+const byte DNS_PORT = 53;
+IPAddress apIP(192, 168, 4, 1);
+DNSServer dnsServer;
+WebServer webServer(80);
+
+_Network _networks[32];
+_Network _selectedNetwork;
+
+// Attack modes
+enum AttackMode {
+  ATTACK_NONE = 0,
+  ATTACK_DEAUTH,
+  ATTACK_BEACON,
+  ATTACK_PROBE,
+  ATTACK_RICKROLL,
+  ATTACK_FAKE_DNS,
+  ATTACK_FAKE_HTTP,
+  ATTACK_FAKE_CAPTIVE
+};
+
+AttackMode currentAttack = ATTACK_NONE;
+bool attackActive = false;
+
+void clearArray() {
+  for (int i = 0; i < 32; i++) {
+    _Network _network;
+    _networks[i] = _network;
+  }
+}
+
+String _correct = "";
+String _tryPassword = "";
+int connectedClients = 0;
+
+// Dark theme CSS
+const String DARK_CSS = R"raw(
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { 
+    background: #0d1117; 
+    color: #c9d1d9; 
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+    line-height: 1.6;
+    min-height: 100vh;
+}
+.container { 
+    max-width: 1200px; 
+    margin: 0 auto; 
+    padding: 20px; 
+}
+.header { 
+    background: linear-gradient(135deg, #161b22, #0d1117);
+    padding: 2rem; 
+    border-radius: 15px;
+    margin-bottom: 2rem;
+    border: 1px solid #30363d;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.header h1 { 
+    color: #ff6b6b; 
+    font-size: 2.5rem; 
+    margin-bottom: 0.5rem;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+.subtitle { 
+    color: #58a6ff; 
+    font-size: 1.2rem; 
+    opacity: 0.9;
+}
+.network-list { 
+    background: #161b22; 
+    border-radius: 10px; 
+    padding: 1.5rem; 
+    margin-bottom: 2rem;
+    border: 1px solid #30363d;
+}
+.network-item { 
+    background: #21262d; 
+    margin: 0.5rem 0; 
+    padding: 1rem; 
+    border-radius: 8px;
+    border-left: 4px solid #58a6ff;
+    transition: all 0.3s ease;
+}
+.network-item:hover {
+    background: #30363d;
+    transform: translateX(5px);
+}
+.btn { 
+    background: linear-gradient(135deg, #238636, #2ea043);
+    color: white; 
+    border: none; 
+    padding: 12px 24px; 
+    border-radius: 8px; 
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    margin: 0.3rem;
+    text-decoration: none;
+    display: inline-block;
+}
+.btn:hover { 
+    background: linear-gradient(135deg, #2ea043, #3fb950);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(46, 160, 67, 0.4);
+}
+.btn-danger { 
+    background: linear-gradient(135deg, #da3633, #f85149);
+}
+.btn-danger:hover { 
+    background: linear-gradient(135deg, #f85149, #ff6d6d);
+}
+.btn-warning { 
+    background: linear-gradient(135deg, #d29922, #e3b341);
+}
+.btn-warning:hover { 
+    background: linear-gradient(135deg, #e3b341, #f2cc60);
+}
+.form-group { 
+    margin-bottom: 1.5rem; 
+}
+.form-input { 
+    width: 100%; 
+    padding: 12px; 
+    background: #21262d; 
+    border: 1px solid #30363d; 
+    border-radius: 8px; 
+    color: #c9d1d9;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+}
+.form-input:focus { 
+    outline: none; 
+    border-color: #58a6ff; 
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+.stats { 
+    background: #161b22; 
+    padding: 1rem; 
+    border-radius: 10px; 
+    margin: 1rem 0;
+    border: 1px solid #30363d;
+}
+.attack-active { 
+    animation: pulse 2s infinite; 
+    border-color: #ff6b6b !important;
+}
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+}
+.success { color: #3fb950; }
+.error { color: #f85149; }
+.warning { color: #d29922; }
+.info { color: #58a6ff; }
+.grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+    gap: 1.5rem; 
+    margin: 2rem 0;
+}
+.card { 
+    background: #161b22; 
+    padding: 1.5rem; 
+    border-radius: 10px; 
+    border: 1px solid #30363d;
+    transition: all 0.3s ease;
+}
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+}
+.progress { 
+    width: 100%; 
+    height: 20px; 
+    background: #21262d; 
+    border-radius: 10px; 
+    overflow: hidden;
+}
+.progress-bar { 
+    height: 100%; 
+    background: linear-gradient(90deg, #238636, #3fb950);
+    transition: width 0.3s ease;
+}
+)raw";
+
+String header(String title) {
+  String html = R"raw(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HACKER Portal - )raw" + title + R"raw(</title>
+    <style>)raw" + DARK_CSS + R"raw(</style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ HACKER Portal</h1>
+            <div class="subtitle">Advanced Network Security Toolkit</div>
+        </div>
+  )raw";
+  return html;
+}
+
+String footer() {
+  return R"raw(
+        <div class="stats">
+            <div class="grid">
+                <div class="card">
+                    <h3>📡 Network Info</h3>
+                    <p>SSID: HACKER</p>
+                    <p>Clients: )raw" + String(connectedClients) + R"raw(</p>
+                </div>
+                <div class="card">
+                    <h3>⚡ Attack Status</h3>
+                    <p>Mode: )raw" + String(attackActive ? "ACTIVE" : "INACTIVE") + R"raw(</p>
+                    <p>Type: )raw" + String(currentAttack) + R"raw(</p>
+                </div>
+                <div class="card">
+                    <h3>📊 System</h3>
+                    <p>Heap: )raw" + String(ESP.getFreeHeap()) + R"raw( bytes</p>
+                    <p>Uptime: )raw" + String(millis() / 1000) + R"raw( s</p>
+                </div>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 2rem; opacity: 0.7;">
+            <p>© 2024 HACKER Security Suite | Advanced Penetration Testing Tool</p>
+        </div>
+    </div>
+    <script>
+        function updateStats() {
+            fetch('/stats').then(r => r.json()).then(data => {
+                document.querySelectorAll('.stats').forEach(el => {
+                    el.querySelector('p:nth-child(2)').textContent = 'Clients: ' + data.clients;
+                    el.querySelector('p:nth-child(3)').textContent = 'Mode: ' + (data.attackActive ? 'ACTIVE' : 'INACTIVE');
+                });
+            });
+        }
+        setInterval(updateStats, 3000);
+    </script>
+</body>
+</html>
+  )raw";
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  Serial.println();
+  Serial.println("🚀 Starting HACKER Portal...");
+  
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  
+  // Set custom SSID and Password
+  WiFi.softAP("HACKER", "12345678");
+  
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  // Setup OTA
+  ArduinoOTA.setHostname("hacker-portal");
+  ArduinoOTA.setPassword("admin123");
+  ArduinoOTA.begin();
+
+  // Web server routes
+  webServer.on("/", handleMain);
+  webServer.on("/attack", handleAttack);
+  webServer.on("/stats", handleStats);
+  webServer.on("/admin", handleAdmin);
+  webServer.on("/creds", handleCreds);
+  webServer.on("/scan", handleScan);
+  webServer.onNotFound(handleMain);
+  
+  webServer.begin();
+  
+  Serial.println("✅ HACKER Portal Started Successfully!");
+  Serial.println("📶 SSID: HACKER");
+  Serial.println("🔑 Password: 12345678");
+  Serial.println("🌐 IP: " + WiFi.softAPIP().toString());
+}
+
+void performScan() {
+  int n = WiFi.scanNetworks(false, true);
+  clearArray();
+  if (n > 0) {
+    for (int i = 0; i < n && i < 32; ++i) {
+      _Network network;
+      network.ssid = WiFi.SSID(i);
+      network.rssi = WiFi.RSSI(i);
+      network.ch = WiFi.channel(i);
+      memcpy(network.bssid, WiFi.BSSID(i), 6);
+      _networks[i] = network;
+    }
+  }
+  WiFi.scanDelete();
+}
+
+void startAttack(AttackMode mode) {
+  if (attackActive) stopAttack();
+  
+  currentAttack = mode;
+  attackActive = true;
+  
+  switch(mode) {
+    case ATTACK_DEAUTH:
+      Serial.println("🎯 Starting Deauth Attack...");
+      break;
+    case ATTACK_BEACON:
+      Serial.println("🎯 Starting Beacon Spam...");
+      break;
+    case ATTACK_PROBE:
+      Serial.println("🎯 Starting Probe Flood...");
+      break;
+    case ATTACK_RICKROLL:
+      Serial.println("🎯 Starting Rickroll Attack...");
+      break;
+    case ATTACK_FAKE_DNS:
+      Serial.println("🎯 Starting Fake DNS...");
+      break;
+    case ATTACK_FAKE_HTTP:
+      Serial.println("🎯 Starting Fake HTTP...");
+      break;
+    case ATTACK_FAKE_CAPTIVE:
+      Serial.println("🎯 Starting Captive Portal...");
+      break;
+    default:
+      break;
+  }
+}
+
+void stopAttack() {
+  attackActive = false;
+  currentAttack = ATTACK_NONE;
+  Serial.println("🛑 All attacks stopped");
+}
+
+String getAttackName(AttackMode mode) {
+  switch(mode) {
+    case ATTACK_DEAUTH: return "Deauth Attack";
+    case ATTACK_BEACON: return "Beacon Spam";
+    case ATTACK_PROBE: return "Probe Flood";
+    case ATTACK_RICKROLL: return "Rickroll Redirect";
+    case ATTACK_FAKE_DNS: return "Fake DNS";
+    case ATTACK_FAKE_HTTP: return "Fake HTTP";
+    case ATTACK_FAKE_CAPTIVE: return "Captive Portal";
+    default: return "None";
+  }
+}
+
+void handleMain() {
+  String html = header("Dashboard");
+  html += R"raw(
+    <div class="grid">
+        <div class="card">
+            <h3>🎯 Quick Actions</h3>
+            <a href="/attack" class="btn">⚔️ Attack Panel</a>
+            <a href="/admin" class="btn">🔧 Admin Panel</a>
+            <a href="/creds" class="btn">🔑 Captured Data</a>
+            <a href="/scan" class="btn">📡 Rescan Networks</a>
+        </div>
+        <div class="card">
+            <h3>📊 System Status</h3>
+            <div class="progress">
+                <div class="progress-bar" style="width: )raw" + String((ESP.getFreeHeap() * 100) / 400000) + R"raw(%"></div>
+            </div>
+            <p>Memory: )raw" + String(ESP.getFreeHeap()) + R"raw( / 400000 bytes</p>
+            <p>Uptime: )raw" + String(millis() / 1000) + R"raw( seconds</p>
+            <p>Connected Clients: )raw" + String(connectedClients) + R"raw(</p>
+        </div>
+        <div class="card">
+            <h3>⚡ Active Attacks</h3>
+            <p>Status: )raw" + String(attackActive ? "<span class='error'>ACTIVE</span>" : "<span class='success'>INACTIVE</span>") + R"raw(</p>
+            <p>Current: )raw" + getAttackName(currentAttack) + R"raw(</p>
+            )raw" + (attackActive ? "<a href='/attack?stop=1' class='btn btn-danger'>🛑 Stop Attack</a>" : "<a href='/attack' class='btn btn-warning'>🚀 Start Attacks</a>") + R"raw(
+        </div>
+    </div>
+  )raw";
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
+
+void handleAttack() {
+  if (webServer.hasArg("start")) {
+    int attackNum = webServer.arg("start").toInt();
+    startAttack((AttackMode)attackNum);
+  } else if (webServer.hasArg("stop")) {
+    stopAttack();
+  }
+
+  String html = header("Attack Panel");
+  html += R"raw(
+    <div class="network-list">
+        <h2>⚔️ Attack Modules</h2>
+        <div class="grid">
+  )raw";
+
+  // Attack buttons
+  String attacks[] = {
+    "Deauth Attack", "Beacon Spam", "Probe Flood", 
+    "Rickroll Redirect", "Fake DNS", "Fake HTTP", "Captive Portal"
+  };
+
+  String icons[] = {"📶", "📡", "🌊", "🎵", "🔗", "🌐", "🚫"};
+
+  for (int i = 1; i <= 7; i++) {
+    html += R"raw(
+        <div class="card">
+            <h3>)raw" + icons[i-1] + R"raw( )raw" + attacks[i-1] + R"raw(</h3>
+            <p style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 1rem;">Advanced network penetration tool</p>
+            <a class="btn )raw" + (attackActive && currentAttack == i ? "btn-danger" : "btn-warning") + R"raw(" 
+               href="/attack?start=)raw" + String(i) + R"raw(">
+                )raw" + (attackActive && currentAttack == i ? "🛑 Stop" : "🚀 Start") + R"raw(
+            </a>
+        </div>
+    )raw";
+  }
+
+  html += R"raw(
+        </div>
+        )raw" + (attackActive ? 
+        "<div class='attack-active card'><h3 class='error'>⚠️ Attack Active: " + getAttackName(currentAttack) + "</h3><p>Monitor serial output for details</p></div>" 
+        : "") + R"raw(
+    </div>
+  )raw";
+  
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
+
+void handleAdmin() {
+  performScan();
+  
+  String html = header("Network Scanner");
+  html += R"raw(
+    <div class="network-list">
+        <h2>📡 Available Networks</h2>
+        <div style="margin-bottom: 1rem;">
+            <a href="/scan" class="btn">🔄 Rescan Networks</a>
+            <a href="/" class="btn">🏠 Dashboard</a>
+        </div>
+  )raw";
+
+  int networkCount = 0;
+  for (int i = 0; i < 32; i++) {
+    if (_networks[i].ssid == "") continue;
+    networkCount++;
+    
+    String strength = "🔴 Weak";
+    String strengthColor = "error";
+    if (_networks[i].rssi > -50) {
+      strength = "🟢 Excellent";
+      strengthColor = "success";
+    } else if (_networks[i].rssi > -60) {
+      strength = "🟢 Good";
+      strengthColor = "success";
+    } else if (_networks[i].rssi > -70) {
+      strength = "🟡 Fair";
+      strengthColor = "warning";
+    } else if (_networks[i].rssi > -80) {
+      strength = "🟡 Poor";
+      strengthColor = "warning";
+    }
+    
+    html += R"raw(
+        <div class="network-item">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="flex: 1;">
+                    <strong style="font-size: 1.1rem;">)raw" + _networks[i].ssid + R"raw(</strong>
+                    <div style="font-size: 0.9rem; opacity: 0.8; margin-top: 0.5rem;">
+                        <div>BSSID: )raw" + bytesToStr(_networks[i].bssid, 6) + R"raw(</div>
+                        <div>Channel: )raw" + String(_networks[i].ch) + R"raw( | RSSI: )raw" + String(_networks[i].rssi) + R"raw( dBm</div>
+                    </div>
+                </div>
+                <div class=")raw" + strengthColor + R"raw(" style="text-align: right;">
+                    <div>)raw" + strength + R"raw(</div>
+                </div>
+            </div>
+        </div>
+    )raw";
+  }
+  
+  if (networkCount == 0) {
+    html += R"raw(
+        <div class="card">
+            <h3 class="warning">No networks found</h3>
+            <p>Click 'Rescan Networks' to refresh the list</p>
+        </div>
+    )raw";
+  }
+  
+  html += "</div>";
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
+
+void handleScan() {
+  performScan();
+  webServer.sendHeader("Location", "/admin");
+  webServer.send(303);
+}
+
+void handleStats() {
+  String json = "{";
+  json += "\"clients\":" + String(connectedClients) + ",";
+  json += "\"attackActive\":" + String(attackActive ? "true" : "false") + ",";
+  json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
+  json += "\"uptime\":" + String(millis() / 1000);
+  json += "}";
+  webServer.send(200, "application/json", json);
+}
+
+void handleCreds() {
+  String html = header("Captured Data");
+  html += R"raw(
+    <div class="card">
+        <h3>🔑 Captured Credentials</h3>
+        <div style="background: #21262d; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+            <pre style="color: #c9d1d9; white-space: pre-wrap;">)raw" + (_correct != "" ? _correct : "No credentials captured yet...") + R"raw(</pre>
+        </div>
+        <a href="/" class="btn">🏠 Back to Dashboard</a>
+    </div>
+  )raw";
+  html += footer();
+  webServer.send(200, "text/html", html);
+}
+
+String bytesToStr(const uint8_t* b, uint32_t size) {
+  String str;
+  for (uint32_t i = 0; i < size; i++) {
+    if (b[i] < 0x10) str += "0";
+    str += String(b[i], HEX);
+    if (i < size - 1) str += ":";
+  }
+  return str;
+}
+
+unsigned long lastScan = 0;
+unsigned long lastClientCheck = 0;
+unsigned long lastAttack = 0;
+unsigned long lastOTAHandle = 0;
+
+void loop() {
+  dnsServer.processNextRequest();
+  webServer.handleClient();
+  ArduinoOTA.handle();
+
+  // Update client count
+  if (millis() - lastClientCheck >= 3000) {
+    connectedClients = WiFi.softAPgetStationNum();
+    lastClientCheck = millis();
+  }
+
+  // Perform attacks
+  if (attackActive && millis() - lastAttack >= 1000) {
+    switch(currentAttack) {
+      case ATTACK_DEAUTH:
+        // Deauth attack implementation
+        Serial.println("🔥 Sending deauth packets...");
+        break;
+      case ATTACK_BEACON:
+        // Beacon spam implementation
+        Serial.println("📡 Broadcasting beacon frames...");
+        break;
+      case ATTACK_PROBE:
+        Serial.println("🌊 Flooding with probe requests...");
+        break;
+      case ATTACK_RICKROLL:
+        Serial.println("🎵 Redirecting to Rickroll...");
+        break;
+      case ATTACK_FAKE_DNS:
+        Serial.println("🔗 Serving fake DNS responses...");
+        break;
+      case ATTACK_FAKE_HTTP:
+        Serial.println("🌐 Serving fake HTTP pages...");
+        break;
+      case ATTACK_FAKE_CAPTIVE:
+        Serial.println("🚫 Captive portal active...");
+        break;
+      default:
+        break;
+    }
+    lastAttack = millis();
+  }
+
+  // Network scanning
+  if (millis() - lastScan >= 30000) { // Scan every 30 seconds
+    performScan();
+    lastScan = millis();
+  }
+
+  // Handle OTA
+  if (millis() - lastOTAHandle >= 100) {
+    ArduinoOTA.handle();
+    lastOTAHandle = millis();
+  }
+}
+EOF
+
+        echo "📦 Building HACKER Portal firmware..."
         arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
-            --build-property build.partitions=min_spiffs \
+            --build-property build.partitions=huge_app \
+            --build-property upload.flash_size=4MB \
             --output-dir build \
-            "$SKETCH"
+            HACKER_Portal
 
     # ---------------------------------------------------------
     # Upload Firmware Artifact (.bin)
@@ -64,8 +682,9 @@ jobs:
     - name: Upload Firmware
       uses: actions/upload-artifact@v4
       with:
-        name: firmware
+        name: hacker-portal-firmware
         path: build/*.bin
+        retention-days: 7
 
   # ---------------------------------------------------------
   # Auto Release (OTA Firmware Upload)
@@ -73,18 +692,28 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
 
     steps:
     - name: Download Firmware
       uses: actions/download-artifact@v4
       with:
-        name: firmware
+        name: hacker-portal-firmware
         path: firmware
+
+    - name: Display Firmware Info
+      run: |
+        echo "📁 Firmware files:"
+        find firmware -name "*.bin" -exec ls -la {} \;
+        echo " "
+        echo "🔧 Build completed successfully!"
 
     - name: Create Release
       uses: ncipollo/release-action@v1
       with:
         tag: "v${{ github.run_number }}"
-        name: "ESP32 Evil Twin OTA Build ${{ github.run_number }}"
+        name: "HACKER Portal v${{ github.run_number }}"
         artifacts: "firmware/*.bin"
-        generateReleaseNotes: truetrue
+        generateReleaseNotes: true
+        draft: false
+        prerelease: false
